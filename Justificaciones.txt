@@ -1,0 +1,88 @@
+JUSTIFICACIÓN DE DECISIONES EN EL PROCESO ETL
+=============================================
+
+Este documento detalla las decisiones tomadas durante la limpieza y preparación de los datos para el proyecto de predicción de demanda energética.
+
+---------------------------------------------
+
+1. TRATAMIENTO DE DATOS FALTANTES (NaNs)
+---------------------------------------------
+
+1.1. Eliminación de Columnas (>50% Faltantes)
+Decisión: Se eliminaron las columnas del dataset de energía que tenían más del 50% de sus valores faltantes.
+Justificación: Una columna con una cantidad tan grande de datos ausentes no es confiable para el modelado. Intentar imputar (rellenar) más de la mitad de los datos introduciría un alto grado de ruido y suposiciones, lo que probablemente degradaría la calidad del modelo predictivo en lugar de mejorarla. Es una práctica estándar eliminar variables con tan poca información real.
+
+1.2. Imputación de Columnas (10-50% Faltantes)
+Decisión: Se utilizó una estrategia de relleno temporal (`forward fill` seguido de `backward fill`).
+Justificación: Estas columnas son series temporales, lo que significa que un valor en un momento dado suele ser similar al valor del momento anterior. El `forward fill` (rellenar con el último valor válido) es ideal para este tipo de datos. El `backward fill` se usa como respaldo para rellenar cualquier NaN que pudiera quedar al principio del dataset.
+
+1.3. Imputación de Columnas (<10% Faltantes)
+Decisión: Se utilizó interpolación lineal.
+Justificación: Con un porcentaje bajo de datos faltantes, podemos asumir que el cambio entre dos puntos de datos conocidos es gradual. La interpolación lineal crea una transición suave y es una estimación más precisa que simplemente repetir el último valor, especialmente para variables que cambian constantemente como la demanda o el precio.
+
+1.4. Eliminación de Filas con Datos Críticos Faltantes
+Decisión: Se eliminaron las filas donde la columna `total load actual` (nuestra variable objetivo) era nula.
+Justificación: La columna `total load actual` es la que queremos predecir. Si no tenemos el valor real para una fila determinada, esa fila es inútil tanto para entrenar el modelo (no podemos calcular el error) como para evaluarlo. Por lo tanto, estas filas deben ser eliminadas.
+
+---------------------------------------------
+
+2. CORRECCIÓN DE OUTLIERS Y ERRORES
+---------------------------------------------
+
+2.1. Presión Atmosférica (`pressure`)
+Decisión: Los valores de presión superiores a 90,000 se dividieron por 100. Los valores fuera del rango meteorológico plausible (900-1100 hPa) se anularon y luego se imputaron.
+Justificación: La presión atmosférica a nivel del mar normalmente se mide en hectopascales (hPa) y rara vez sale del rango 900-1100 hPa. Los valores observados de ~100,000 son consistentes con la medición en Pascales (Pa). La corrección (`/ 100`) es una simple conversión de unidades de Pa a hPa. Cualquier valor que aún quedara fuera del rango plausible después de la conversión se consideró un error de medición y se trató como un dato faltante para ser imputado.
+
+2.2. Velocidad del Viento (`wind_speed`)
+Decisión: Los valores de velocidad del viento superiores a 50 m/s se dividieron por 10.
+Justificación: Velocidades de viento sostenidas por encima de 50 m/s (180 km/h) son extremadamente raras y corresponden a huracanes de alta categoría. Es mucho más probable que estos valores sean un error de entrada de datos (por ejemplo, un decimal mal colocado). La división por 10 los sitúa en un rango mucho más creíble.
+
+---------------------------------------------
+
+3. TRATAMIENTO DE DUPLICADOS
+---------------------------------------------
+
+Decisión: Se eliminaron las filas duplicadas en el dataset de clima, específicamente aquellas con la misma combinación de `dt_iso` (timestamp) y `city_name`.
+Justificación: Para un momento y una ciudad determinados, solo debería existir un único registro meteorológico. La presencia de duplicados indica un error en la recolección de datos. Se eliminan para evitar inconsistencias y asegurar que cada punto de datos sea único.
+
+---------------------------------------------
+
+4. TRANSFORMACIÓN Y CREACIÓN DE VARIABLES
+---------------------------------------------
+
+4.1. Conversión de Temperatura (Kelvin a Celsius)
+Decisión: Se convirtió la columna `temp` de Kelvin a Celsius.
+Justificación: Si bien los modelos pueden funcionar con Kelvin, Celsius es una unidad mucho más intuitiva y fácil de interpretar para el análisis humano y la presentación de resultados. Esta conversión no altera la información subyacente, solo cambia la escala para facilitar la comprensión.
+
+4.2. Consolidación de la Generación de Energía (`generation_total`)
+Decisión: Se sumaron todas las columnas individuales de generación (`generation solar`, `generation wind`, etc.) en una única columna `generation_total`.
+Justificación: Para el objetivo de predecir la demanda total, el desglose por tipo de generación no era prioritario. Consolidar estas columnas en una sola simplifica el modelo al reducir el número de variables, disminuyendo la complejidad y el riesgo de multicolinealidad entre los diferentes tipos de generación.
+
+---------------------------------------------
+
+5. ESTRATEGIA DE AGREGACIÓN DE DATOS CLIMÁTICOS
+---------------------------------------------
+
+El objetivo es elegir la estadística (media, mediana o moda) que mejor represente el "valor típico" de cada variable climática a nivel nacional para cada hora.
+
+5.1. Temperatura (`temp_celsius`), Presión (`pressure`) y Humedad (`humidity`)
+Elección: Media (mean)
+Justificación:
+    - Distribución: Estas tres variables muestran distribuciones que son razonablemente simétricas (similares a una campana de Gauss), especialmente después de la limpieza de outliers.
+    - Por qué la Media: Para distribuciones simétricas, la media es un excelente representante del valor central, ya que considera todos los valores en su cálculo. La media, la mediana y la moda tienden a ser muy similares en estos casos.
+
+5.2. Velocidad del Viento (`wind_speed`)
+Elección: Mediana (median)
+Justificación:
+    - Distribución: El gráfico de distribución muestra una clara asimetría hacia la derecha. Esto significa que la mayoría de las veces el viento es ligero (valores bajos), pero hay ocasiones con ráfagas muy fuertes (valores altos) que actúan como outliers.
+    - Por qué la Mediana: La mediana es robusta a los valores extremos. Si usáramos la media, las pocas mediciones de vientos muy fuertes la "inflarían", dándonos un valor promedio más alto de lo que realmente se siente la mayor parte del tiempo. La mediana nos da el valor central, que es más representativo.
+
+5.3. Lluvia (`rain_1h`) y Nubes (`clouds_all`)
+Elección: Mediana (median)
+Justificación:
+    - Distribución:
+        - Lluvia: Presenta una asimetría extrema. La gran mayoría de los registros son 0 (no llueve).
+        - Nubes: A menudo tiene picos en 0% (cielo despejado) y 100% (cielo cubierto), lo que se conoce como distribución bimodal o en forma de "U".
+    - Por qué la Mediana:
+        - Para la lluvia, usar la media sería un error, ya que los pocos eventos de lluvia intensa promediarían un valor pequeño pero no nulo, sugiriendo que siempre hay una llovizna ligera, lo cual es falso. La mediana (que es 0) representa correctamente que "la mayor parte del tiempo no llueve".
+        - Para las nubes, la media podría caer en un valor intermedio (ej. 50%) que en realidad es poco frecuente. La mediana es más estable y tiende a representar mejor uno de los estados más comunes.
